@@ -91,10 +91,13 @@ jobs:
           # No --rm: if the app exits immediately, Docker removes --rm containers
           # and a later docker stop hits "No such container".
           docker rm -f wrapper-smoke 2>/dev/null || true
+          # Match compose.yaml: AppArmor default profile can deny mount(2) (urandom
+          # bind) even with CAP_SYS_ADMIN; SYS_PTRACE matches production caps.
           docker run -d \
             --platform ${{ matrix.docker_platform }} \
             --name wrapper-smoke \
-            --cap-add SYS_ADMIN --cap-add SYS_CHROOT \
+            --cap-add SYS_ADMIN --cap-add SYS_CHROOT --cap-add SYS_PTRACE \
+            --security-opt apparmor=unconfined \
             -p 8080:80 \
             wrapper-v2:${{ github.sha }}
           ok=0
