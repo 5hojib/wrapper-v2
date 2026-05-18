@@ -118,21 +118,12 @@ bool Account::submit_2fa(std::string code) {
 }
 
 bool Account::try_restore_cached_session(const Loader& loader, const Runtime& runtime) {
-    std::fprintf(stderr, "auth: entered\n"); std::fflush(stderr);
     if (!loader.ok() || !runtime.initialized()) {
-        std::fprintf(stderr, "auth: early exit\n"); std::fflush(stderr);
         return false;
     }
-    std::fprintf(stderr, "auth: checks ok\n"); std::fflush(stderr);
 
-    std::fprintf(stderr, "auth: calling base_dir ...\n"); std::fflush(stderr);
     std::string bd = runtime.base_dir();
-    std::fprintf(stderr, "auth: base_dir='%s' len=%zu\n", bd.c_str(), bd.size());
-    std::fflush(stderr);
-
-    std::fprintf(stderr, "auth: calling warm_session_present ...\n"); std::fflush(stderr);
     bool warm = warm_session_present(bd);
-    std::fprintf(stderr, "auth: warm=%d\n", warm ? 1 : 0); std::fflush(stderr);
     if (!warm) {
         std::fprintf(stderr,
                      "auth: no warm Apple session at %s/mpl_db/kvs.sqlitedb; "

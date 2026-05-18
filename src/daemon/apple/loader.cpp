@@ -386,11 +386,9 @@ bool Loader::open(const std::string& libs_dir) {
 #undef RESOLVE_FP
 
     if (foot_hill_persistent_key_fn_ != nullptr) {
-        std::fprintf(stderr,
-                     "loader: FairPlay getPersistentKey ABI=%s fn=%p\n",
-                     foot_hill_persistent_key_abi8_ ? "8-string" : "7-string",
-                     foot_hill_persistent_key_fn_);
-        std::fflush(stderr);
+        trace(foot_hill_persistent_key_abi8_
+                  ? "FairPlay getPersistentKey ABI=8-string"
+                  : "FairPlay getPersistentKey ABI=7-string");
     }
 
     if (!fp_ok) {

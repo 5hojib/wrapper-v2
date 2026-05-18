@@ -233,21 +233,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "wrapper-v2: opening Apple libs from %s\n",
                      libs_dir.c_str());
         if (loader.open(libs_dir)) {
-            std::fprintf(stderr, "wrapper-v2: loader.open ok\n");
             wrapper::apple::RuntimeConfig rcfg;
             rcfg.base_dir    = env_or("WRAPPER_BASE_DIR",    rcfg.base_dir);
             rcfg.device_info = env_or("WRAPPER_DEVICE_INFO", rcfg.device_info);
-            std::fprintf(stderr, "wrapper-v2: runtime.initialize start\n");
             if (runtime.initialize(loader, rcfg)) {
-                std::fprintf(stderr, "wrapper-v2: runtime.initialize ok\n");
                 if (env_bool("WRAPPER_RESTORE_SESSION", true)) {
-                    std::fprintf(stderr,
-                                 "wrapper-v2: try_restore_cached_session start\n");
                     const bool restored =
                         account.try_restore_cached_session(loader, runtime);
-                    std::fprintf(stderr,
-                                 "wrapper-v2: try_restore_cached_session ok "
-                                 "(restored=%d)\n", restored ? 1 : 0);
                     if (restored) {
                         std::fprintf(stderr,
                                      "wrapper-v2: session restored from Apple cache "
@@ -277,17 +269,13 @@ int main(int argc, char** argv) {
                      "(stub mode: /health only; POST /login returns 503)\n");
     }
 
-    std::fprintf(stderr, "wrapper-v2: maybe_auto_login_from_env start\n");
     maybe_auto_login_from_env(account, loader, runtime, info.apple_init_enabled);
-    std::fprintf(stderr, "wrapper-v2: maybe_auto_login_from_env ok\n");
 
     httplib::Server svr;
     g_server.store(&svr);
 
-    std::fprintf(stderr, "wrapper-v2: server.mount start\n");
     wrapper::Server server(svr, runtime, loader, account, info);
     server.mount();
-    std::fprintf(stderr, "wrapper-v2: server.mount ok\n");
 
     std::fprintf(stderr, "wrapper-v2: %s listening on %s:%d\n", kVersion,
                  listen_host.c_str(), listen_port);

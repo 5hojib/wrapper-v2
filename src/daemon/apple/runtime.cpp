@@ -54,15 +54,6 @@ void trace(const char* stage) {
     std::fflush(stderr);
 }
 
-// Allow skipping playback init via WRAPPER_SKIP_PLAYBACK_INIT=1 so users can
-// confirm whether SVPlaybackLeaseManager_ctor is the SIGSEGV source.
-bool skip_playback_init() {
-    const char* x = std::getenv("WRAPPER_SKIP_PLAYBACK_INIT");
-    if (x == nullptr || *x == '\0') return false;
-    if (std::strcmp(x, "0") == 0) return false;
-    return true;
-}
-
 void end_lease_cb(const int& code) {
     std::fprintf(stderr, "runtime: playback lease ended (code=%d)\n", code);
 }
@@ -310,12 +301,7 @@ bool Runtime::initialize(const Loader& loader, const RuntimeConfig& cfg) {
     device_info_ = cfg.device_info;
     loader_      = &loader;
 
-    if (skip_playback_init()) {
-        playback_ready_ = false;
-        std::fprintf(stderr,
-                     "runtime: WRAPPER_SKIP_PLAYBACK_INIT set; skipping playback "
-                     "session init (POST /decrypt unavailable)\n");
-    } else if (!loader.fairplay_decrypt_available()) {
+    if (!loader.fairplay_decrypt_available()) {
         playback_ready_ = false;
         std::fprintf(stderr,
                      "runtime: FairPlay decrypt chain not loaded; POST /decrypt unavailable\n");

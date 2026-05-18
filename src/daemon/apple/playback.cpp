@@ -256,11 +256,10 @@ PlaybackResult fetch_playback_json(const Loader& loader,
         ++cap_ptr->hits;
     };
 
-    // PurchaseRequest is heavy-ish; upstream upstream uses malloc(1024) and
-    // never frees. We use an 8 KiB thread_local stack buffer instead - same
-    // pattern as URLRequest in tokens.cpp. The object's destructor is not
-    // called (same as upstream). 8 KiB is used on arm64 to handle larger
-    // alignment and object sizes.
+    // PurchaseRequest is heavy-ish; upstream uses malloc(1024) and never frees.
+    // Keep one 8 KiB thread-local buffer and skip destruction, matching the
+    // upstream lifetime model while leaving extra room for arm64 object size
+    // and alignment.
     alignas(16) static thread_local std::uint8_t pr_buf[8192];
     std::memset(pr_buf, 0, sizeof(pr_buf));
 

@@ -273,10 +273,9 @@ inline void svfoot_decrypt_context(abi::shared_ptr*                 ret,
         : WRAPPER_A64_CLOB_CALL);
 }
 
-// URLRequest::run() returns a 3-pointer struct (24 bytes) on arm64, requiring
-// an sret buffer in x8. Without it, run() writes the third struct field to
-// x8+16 and crashes with fault_addr=0x10 when x8=0x0 (POST path exercises
-// body-data access that GET skips, so GET survives on a stale non-null x8).
+// Keep an x8 scratch slot for URLRequest::run() on AArch64. Some Apple C++
+// entry points in this area return non-trivial values via the hidden result
+// register, and the scratch slot is harmless for void-returning builds.
 inline void urlrequest_run(void* this_, abi::fn_URLRequest_run fn) {
     void* callee = reinterpret_cast<void*>(fn);
     // 32-byte scratch buffer for the sret return value (we discard it).

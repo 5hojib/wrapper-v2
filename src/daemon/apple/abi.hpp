@@ -314,9 +314,8 @@ using fn_URLRequest_ctor =
 using fn_URLRequest_setRequestParameter =
     void (*)(void* this_, std_string* name, std_string* value);
 
-// URLRequest::run() returns void* on arm64 AAPCS (implicit sret struct return)
-// but void on x86_64. We declare as void since we ignore the return value, but
-// the calling convention differs on arm64 and might require sret thunk treatment.
+// URLRequest::run(). Call through aarch64_sret::urlrequest_run so AArch64 gets
+// a harmless hidden-result scratch slot if the exported build expects one.
 using fn_URLRequest_run      = void (*)(void* this_);
 using fn_URLRequest_error    = shared_ptr* (*)(void* this_);
 using fn_URLRequest_response = shared_ptr* (*)(void* this_);
