@@ -1,8 +1,8 @@
 # wrapper-v2 image.
 #
 # This Dockerfile assumes that rootfs/system/lib64/ has already been populated
-# by tools/extract-libs.sh + tools/stage-system.sh on the host (or in CI) for
-# the same TARGET_ARCH. The image does not fetch the APK.
+# by the host (or in CI) for the same TARGET_ARCH. The image does not download
+# or extract Apple Music artifacts.
 #
 # The build stage is always linux/amd64: Google only publishes the Linux NDK as
 # an x86_64-host zip (android-ndk-r*b-linux.zip). On TARGET_ARCH=arm64-v8a we
@@ -66,7 +66,7 @@ RUN test -f rootfs/system/bin/linker64 || { \
     test -d rootfs/system/lib64 && \
     ls rootfs/system/lib64/*.so >/dev/null 2>&1 || { \
         echo "ERROR: rootfs/system/lib64/ has no .so files." >&2; \
-        echo "Run tools/fetch-apk.sh + tools/extract-libs.sh + tools/stage-system.sh on the host before docker build." >&2; \
+        echo "Stage the required Apple Music native libraries before docker build." >&2; \
         exit 1; \
     }
 

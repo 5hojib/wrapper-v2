@@ -99,8 +99,8 @@ endif()
 
 if(NOT EXISTS "${LIBS_DIR}/libc++_shared.so")
     message(FATAL_ERROR
-        "${LIBS_DIR}/libc++_shared.so is missing. Run tools/extract-libs.sh "
-        "first to populate rootfs/system/lib64/ from a verified APK bundle.")
+        "${LIBS_DIR}/libc++_shared.so is missing. Stage the required Apple "
+        "Music native libraries in rootfs/system/lib64/ before building.")
 endif()
 
 target_link_libraries(main PRIVATE

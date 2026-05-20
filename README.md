@@ -28,11 +28,9 @@ one, and retry the decrypt request without dropping the public HTTP server. If
 the worker cannot be started three consecutive times, the supervisor exits so
 the container supervisor can recreate the whole runtime.
 
-The daemon ships _no_ Apple code. At build time, libraries are extracted from
-an Apple Music for Android **3.6.0-beta (1109)** arch split (`.apk` or `.apkm`
-bundle) and each `.so` is checked against SHA-256 pins in `LIBS_VERSION.json`.
-The bundle/APK file itself is not hashed; a wrong split still fails when the
-library digests do not match.
+The daemon ships _no_ Apple code. Apple Music native libraries must be supplied
+by the person building the image and staged into `rootfs/system/lib64/`; the
+expected `.so` SHA-256 digests are pinned in `LIBS_VERSION.json`.
 
 ## HTTP API
 
@@ -101,7 +99,7 @@ Optional `WRAPPER_APPLE_ID` only sets the `apple_id` label in `/me` after restor
 ├── CMakeLists.txt            top-level build (host launcher + NDK sub-build)
 ├── Dockerfile                multi-stage build
 ├── compose.yaml              docker compose entrypoint
-├── LIBS_VERSION.json         per-.so SHA-256 digests (+ optional apkm pin for fetch-apk)
+├── LIBS_VERSION.json         per-.so SHA-256 digests
 ├── src/
 │   ├── daemon/               C++ daemon (cross-compiled with the NDK)
 │   │   ├── CMakeLists.txt
@@ -120,8 +118,7 @@ Optional `WRAPPER_APPLE_ID` only sets the `apple_id` label in `/me` after restor
 │       ├── bin/              <- main, linker64 (staged)
 │       └── lib64/            <- Apple's .so + Android system .so (staged)
 ├── tools/
-│   ├── fetch-apk.sh          download a .apkm, verify bundle SHA-256 (optional)
-│   ├── extract-libs.sh       extract .so from .apkm or arch split .apk; verify each lib
+│   ├── extract-libs.sh       optional local helper to extract and verify Apple .so files
 │   └── stage-system.sh       copy committed Android binaries into rootfs/
 └── vendor/
     └── android-system/       linker64 + bionic + AOSP libs, SHA-pinned
@@ -141,27 +138,26 @@ You need a working Docker installation. Apart from that, the entire build
 runs inside the image. There is no host toolchain prerequisite for the
 default workflow.
 
-For the build to succeed you must obtain Apple Music for Android **3.6.0-beta
-(1109)** as APK splits. The APK is _not_ committed and _not_ fetched
-automatically by the Dockerfile.
+For the build to succeed, `rootfs/system/lib64/` must already contain the
+required Apple Music native libraries for your `TARGET_ARCH`. The recommended
+source version is Apple Music for Android **3.6.0-beta**. This repository does
+not provide the download for those files.
 
 ### Local build
 
 ```bash
-# 1. Fetch the APKMirror bundle (you provide the URL).
-#    Writes to .tmp/bundle.apkm by default (--out optional).
-APK_URL=https://your-mirror.example/apple-music-3.6.0-beta-1109.apkm \
-    tools/fetch-apk.sh --expect apkm
+# 1. Extract Apple Music native libraries from a local .apk or .apkm you provide.
+#    Default --out is rootfs/system/lib64; each .so must match .libs.<arch>.
+tools/extract-libs.sh --bundle path/to/local/apple-music.apk --arch x86_64
+# .apkm bundles are also accepted:
+# tools/extract-libs.sh --bundle path/to/local/apple-music.apkm --arch x86_64
 
-# 2. Extract Apple libs. Default --out is rootfs/system/lib64.
-#    Pass a .apkm bundle or an arch split .apk; each .so must match .libs.<arch>.
-tools/extract-libs.sh --bundle .tmp/bundle.apkm --arch x86_64
-# Or, if you already have the split APK:
-# tools/extract-libs.sh --bundle path/to/split_config.x86_64.apk --arch x86_64
-
-# 3. Stage the committed Android system binaries (linker64 + bionic + AOSP)
+# 2. Stage the committed Android system binaries (linker64 + bionic + AOSP)
 #    into rootfs/, verifying their SHA-256 against LIBS_VERSION.json.
 tools/stage-system.sh --arch x86_64
+
+# 3. Make sure Apple Music native libraries for x86_64 are present in
+#    rootfs/system/lib64/ and match LIBS_VERSION.json.
 
 # 4. Build and run.
 docker compose up --build
@@ -190,9 +186,9 @@ on machines that already have something on `:80`.
 
 ### arm64-v8a image (Apple Silicon / AArch64 Linux)
 
-Use the same `.apkm` (or an **arm64-v8a** split `.apk`), extract and stage **arm64-v8a**, then build a **linux/arm64**
-image so `wrapper`, the NDK daemon, and the staged `linker64` / `.so` set share the
-same ABI.
+Stage **arm64-v8a** Android system binaries and Apple Music native libraries,
+then build a **linux/arm64** image so `wrapper`, the NDK daemon, and the staged
+`linker64` / `.so` set share the same ABI.
 
 The Docker **compile** stage is always **linux/amd64** (Google ships the Linux NDK as an
 x86_64-host ZIP only). The image then cross-compiles `wrapper` for AArch64 when
@@ -200,7 +196,9 @@ x86_64-host ZIP only). The image then cross-compiles `wrapper` for AArch64 when
 ignored but kept for compatibility.
 
 ```bash
-tools/extract-libs.sh --bundle .tmp/bundle.apkm --arch arm64-v8a
+tools/extract-libs.sh --bundle path/to/local/apple-music.apk --arch arm64-v8a
+# Or use a local .apkm bundle:
+# tools/extract-libs.sh --bundle path/to/local/apple-music.apkm --arch arm64-v8a
 tools/stage-system.sh --arch arm64-v8a
 
 TARGET_ARCH=arm64-v8a RUNTIME_PLATFORM=linux/arm64 \
@@ -241,17 +239,19 @@ The daemon reads `WRAPPER_*` environment variables (forwarded via
 
 The `.github/workflows/build.yml` workflow runs on **push** to `main`,
 on **pull_request** (same-repo only for the full job), and **workflow_dispatch**.
-It uses the same host steps as above plus a Docker build and `/health` smoke test,
-with one repository secret:
+It uses the same host steps as above plus a Docker build and `/health` smoke
+test, with one repository secret:
 
-- `APK_URL` - URL of the pinned `.apkm` (must match `LIBS_VERSION.json` → `apkm`)
+- `APK_URL` - private/local CI URL for a compatible Apple Music `.apk` or
+  `.apkm`. The artifact is downloaded inside CI only, extracted with
+  `tools/extract-libs.sh`, and is not committed.
 
 **Matrix:** both `x86_64` and `arm64-v8a` jobs use `ubuntu-latest`. The arm64 image is
 `linux/arm64` at runtime; QEMU is enabled before the smoke `docker run` so the job works
 on amd64 GitHub runners. The compile stage stays **linux/amd64** for the official NDK ZIP.
 
-Pull requests opened from forks skip the build job (they cannot read the
-secret).
+Pull requests opened from forks skip the build job because they cannot read the
+secret.
 
 ## License
 

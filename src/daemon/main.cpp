@@ -309,7 +309,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr,
                              "wrapper-v2: Apple runtime init failed after dlopen "
                              "succeeded; the loaded libs may be from an unexpected "
-                             "APK version. Continuing in stub mode.\n");
+                             "Apple Music native library version. Continuing in "
+                             "stub mode.\n");
             }
         } else {
             std::fprintf(stderr,

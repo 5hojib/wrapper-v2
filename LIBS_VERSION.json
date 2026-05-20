@@ -1,12 +1,11 @@
 {
-  "$comment": "Pinned native library hashes. Apple .so files are not committed; extract-libs.sh unpacks them from a .apkm or arch split .apk and verifies each against .libs.<arch>. The apkm field is optional metadata (not checked by extract-libs). AOSP paths match .android_system.",
-  "apk": {
+  "$comment": "Pinned native library hashes. Apple .so files are not committed; when staged manually they should match .libs.<arch>. AOSP paths match .android_system.",
+  "apple_music": {
     "package": "com.apple.android.music",
     "version": "3.6.0-beta",
     "build": "1109",
     "ndk_version": "r23b"
   },
-  "apkm": "5be907af370a7f6bd73344e646dcfebe2e64c2da3b9ad71192110c91950f3f67",
   "android_system": {
     "$comment": "Android system libraries needed at runtime by Apple's .so files. Committed to the repo under vendor/android-system/<arch>/. Apache-2.0 (AOSP). See vendor/android-system/README.md for provenance.",
     "x86_64": {
