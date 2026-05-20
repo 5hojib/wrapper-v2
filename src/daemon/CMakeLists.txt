@@ -40,6 +40,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 add_executable(main
     main.cpp
     server.cpp
+    supervisor.cpp
     apple/auth.cpp
     apple/decrypt.cpp
     apple/loader.cpp

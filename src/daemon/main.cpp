@@ -19,6 +19,8 @@
 //
 //   WRAPPER_HOST          Bind address (default 0.0.0.0)
 //   WRAPPER_PORT          Bind port    (default 80)
+//   WRAPPER_MODE          supervisor (default) or worker
+//   WRAPPER_WORKER_PORT   Private supervisor->worker port (default 18080)
 //   WRAPPER_BASE_DIR      Apple-lib working dir (default
 //                         /data/data/com.apple.android.music/files)
 //   WRAPPER_DEVICE_INFO   9-tuple device identifier
@@ -51,14 +53,21 @@
 #include "apple/loader.hpp"
 #include "apple/runtime.hpp"
 #include "server.hpp"
+#include "supervisor.hpp"
 
 namespace {
 
 constexpr const char* kDefaultHost    = "0.0.0.0";
 constexpr int         kDefaultPort    = 80;
+constexpr int         kDefaultWorkerPort = 18080;
 constexpr const char* kVersion        = "0.0.1";
 
 std::atomic<httplib::Server*> g_server{nullptr};
+
+enum class ProgramMode {
+    Supervisor,
+    Worker,
+};
 
 // Minimal async-signal-safe crash line (no /proc parsing — avoids huge logs).
 void on_crash(int sig, siginfo_t* info, void* ctx) {
@@ -102,7 +111,25 @@ bool env_bool(const char* name, bool fallback) {
     return true;
 }
 
-bool consume_argv(int argc, char** argv) {
+int env_int(const char* name, int fallback) {
+    int v = std::atoi(env_or(name, std::to_string(fallback)).c_str());
+    return v > 0 ? v : fallback;
+}
+
+bool consume_argv(int argc, char** argv, ProgramMode* mode) {
+    std::string mode_env = env_or("WRAPPER_MODE", "supervisor");
+    if (mode_env == "worker") {
+        *mode = ProgramMode::Worker;
+    } else if (mode_env == "supervisor") {
+        *mode = ProgramMode::Supervisor;
+    } else {
+        std::fprintf(stderr,
+                     "wrapper-v2: invalid WRAPPER_MODE='%s' "
+                     "(expected 'supervisor' or 'worker')\n",
+                     mode_env.c_str());
+        std::exit(2);
+    }
+
     for (int i = 1; i < argc; ++i) {
         std::string_view x = argv[i];
         if (x == "--help" || x == "-h") {
@@ -110,12 +137,19 @@ bool consume_argv(int argc, char** argv) {
                 "wrapper-v2 daemon (%s)\n"
                 "Usage: %s\n"
                 "\n"
-                "Bind address and port are set with WRAPPER_HOST / WRAPPER_PORT\n"
-                "(defaults %s / %d).\n"
+                "Default mode is a public supervisor HTTP server. Set\n"
+                "WRAPPER_MODE=worker to start the private Apple runtime server\n"
+                "used by the supervisor.\n"
+                "\n"
+                "Supervisor bind address and port are set with WRAPPER_HOST /\n"
+                "WRAPPER_PORT (defaults %s / %d). Worker port is set with\n"
+                "WRAPPER_WORKER_PORT (default %d).\n"
                 "\n"
                 "Environment:\n"
                 "  WRAPPER_HOST             bind address\n"
                 "  WRAPPER_PORT             bind port\n"
+                "  WRAPPER_MODE             supervisor or worker\n"
+                "  WRAPPER_WORKER_PORT      private worker bind port\n"
                 "  WRAPPER_BASE_DIR         Apple-lib working dir\n"
                 "  WRAPPER_DEVICE_INFO      9-tuple device identifier\n"
                 "  WRAPPER_APPLE_INIT       set to 0 to skip Apple lib init\n"
@@ -123,7 +157,7 @@ bool consume_argv(int argc, char** argv) {
                 "  WRAPPER_APPLE_ID         optional /me label after restore\n"
                 "  WRAPPER_USERNAME         Apple ID for env auto-login (+WRAPPER_PASSWORD)\n"
                 "  WRAPPER_PASSWORD         app password for env auto-login\n",
-                kVersion, argv[0], kDefaultHost, kDefaultPort);
+                kVersion, argv[0], kDefaultHost, kDefaultPort, kDefaultWorkerPort);
             return false;
         }
         std::fprintf(stderr,
@@ -194,16 +228,14 @@ int main(int argc, char** argv) {
                  "wrapper-v2: daemon starting (argv0=%s, pid=%ld)\n",
                  argc > 0 ? argv[0] : "?", static_cast<long>(getpid()));
 
-    if (!consume_argv(argc, argv)) {
+    ProgramMode mode = ProgramMode::Supervisor;
+    if (!consume_argv(argc, argv, &mode)) {
         return 0;
     }
 
     std::string listen_host = env_or("WRAPPER_HOST", kDefaultHost);
-    int listen_port =
-        std::atoi(env_or("WRAPPER_PORT", std::to_string(kDefaultPort)).c_str());
-    if (listen_port <= 0) {
-        listen_port = kDefaultPort;
-    }
+    int listen_port = env_int("WRAPPER_PORT", kDefaultPort);
+    const int worker_port = env_int("WRAPPER_WORKER_PORT", kDefaultWorkerPort);
 
     std::signal(SIGINT,  on_signal);
     std::signal(SIGTERM, on_signal);
@@ -217,6 +249,30 @@ int main(int argc, char** argv) {
         sigaction(SIGSEGV, &sa, nullptr);
         sigaction(SIGABRT, &sa, nullptr);
     }
+
+    if (mode == ProgramMode::Supervisor) {
+        wrapper::Supervisor supervisor(argc > 0 ? argv[0] : "/system/bin/main",
+                                       kVersion, worker_port);
+
+        httplib::Server svr;
+        g_server.store(&svr);
+        supervisor.mount(svr);
+
+        std::fprintf(stderr,
+                     "wrapper-v2: %s supervisor listening on %s:%d "
+                     "(worker 127.0.0.1:%d)\n",
+                     kVersion, listen_host.c_str(), listen_port, worker_port);
+
+        if (!svr.listen(listen_host, listen_port)) {
+            std::fprintf(stderr, "wrapper-v2: supervisor bind failed on %s:%d\n",
+                         listen_host.c_str(), listen_port);
+            return 1;
+        }
+        supervisor.stop_worker();
+        return 0;
+    }
+
+    std::fprintf(stderr, "wrapper-v2: worker mode starting\n");
 
     wrapper::ServerInfo info;
     info.version = kVersion;
@@ -276,7 +332,7 @@ int main(int argc, char** argv) {
     wrapper::Server server(svr, runtime, loader, account, info);
     server.mount();
 
-    std::fprintf(stderr, "wrapper-v2: %s listening on %s:%d\n", kVersion,
+    std::fprintf(stderr, "wrapper-v2: %s worker listening on %s:%d\n", kVersion,
                  listen_host.c_str(), listen_port);
 
     if (!svr.listen(listen_host, listen_port)) {

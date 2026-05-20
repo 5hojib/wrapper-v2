@@ -1,10 +1,14 @@
 #include "server.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -29,6 +33,8 @@ constexpr auto kLoginTimeout = 30s;
 // How long POST /login/2fa is willing to block after submitting the
 // code. The flow has to make a network round-trip back to Apple.
 constexpr auto kLogin2faTimeout    = 60s;
+constexpr auto kDecryptWatchdogTimeout = 45s;
+constexpr int  kRestartExitCode    = 75;
 
 void respond_json(httplib::Response& res, int status, json body) {
     res.status = status;
@@ -39,6 +45,27 @@ void access_log(const char* method, const httplib::Request& req) {
     const std::string& peer = req.remote_addr;
     const char* p = peer.empty() ? "-" : peer.c_str();
     std::fprintf(stderr, "http: %s %s client=%s\n", method, req.path.c_str(), p);
+}
+
+void schedule_process_restart(std::string reason) {
+    std::thread([reason = std::move(reason)] {
+        std::this_thread::sleep_for(750ms);
+        std::fprintf(stderr, "wrapper-v2: hard restart requested: %s\n", reason.c_str());
+        std::fflush(stderr);
+        std::_Exit(kRestartExitCode);
+    }).detach();
+}
+
+std::shared_ptr<std::atomic_bool> start_decrypt_watchdog() {
+    auto done = std::make_shared<std::atomic_bool>(false);
+    std::thread([done] {
+        std::this_thread::sleep_for(kDecryptWatchdogTimeout);
+        if (done->load(std::memory_order_acquire)) return;
+        std::fprintf(stderr, "wrapper-v2: hard restart requested: POST /decrypt watchdog timeout\n");
+        std::fflush(stderr);
+        std::_Exit(kRestartExitCode);
+    }).detach();
+    return done;
 }
 
 std::string iso8601_utc(std::chrono::system_clock::time_point tp) {
@@ -517,17 +544,21 @@ void Server::mount() {
             return;
         }
 
+        auto decrypt_done = start_decrypt_watchdog();
         apple::DecryptResult dr;
         {
             std::lock_guard<std::mutex> lock(rt_.playback_mutex());
             dr = apple::decrypt_samples(loader_, rt_, std::move(frame.adam_id), std::move(frame.uri),
                                         std::move(frame.samples));
         }
+        decrypt_done->store(true, std::memory_order_release);
 
         if (!dr.ok) {
+            schedule_process_restart("POST /decrypt FairPlay failure: " + dr.error);
             respond_json(res, 502, json{
                 {"error", "decrypt_failed"},
                 {"detail", dr.error},
+                {"restarting", true},
             });
             return;
         }
@@ -561,8 +592,6 @@ void Server::mount() {
     // ---- exception fallback ----
     svr_.set_exception_handler([](const httplib::Request& req, httplib::Response& res,
                                   std::exception_ptr ep) {
-        std::fprintf(stderr, "http: exception %s %s\n",
-                     req.method.c_str(), req.path.c_str());
         std::string what = "unknown";
         try {
             if (ep) std::rethrow_exception(ep);
@@ -570,6 +599,8 @@ void Server::mount() {
             what = e.what();
         } catch (...) {
         }
+        std::fprintf(stderr, "http: exception %s %s: %s\n",
+                     req.method.c_str(), req.path.c_str(), what.c_str());
         respond_json(res, 500, json{{"error", "internal"}, {"detail", what}});
     });
 }

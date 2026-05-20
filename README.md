@@ -6,10 +6,19 @@ Current version: **0.0.1**.
 
 ## What it is
 
-A small daemon that runs Apple Music's Android native libraries inside a
-Linux chroot, exposes a local HTTP API for FairPlay key fetching and sample
-decryption, and gives downstream tooling (e.g. [`gamdl`](https://github.com/glomatico/gamdl))
-a uniform interface that does not depend on platform or language.
+A small daemon that exposes a local HTTP API for FairPlay key fetching and
+sample decryption, and gives downstream tooling (e.g.
+[`gamdl`](https://github.com/glomatico/gamdl)) a uniform interface that does
+not depend on platform or language.
+
+At runtime the binary starts in **supervisor** mode by default. The supervisor
+owns the public HTTP port and starts a private `WRAPPER_MODE=worker` subprocess on
+`127.0.0.1:${WRAPPER_WORKER_PORT:-18080}`. Only the worker loads Apple Music's
+Android native libraries inside the Linux chroot. If FairPlay hangs or returns
+a CKC/KD-style decrypt error, the supervisor can kill the worker, start a fresh
+one, and retry the decrypt request without dropping the public HTTP server. If
+the worker cannot be started three consecutive times, the supervisor exits so
+the container supervisor can recreate the whole runtime.
 
 The daemon ships _no_ Apple code. At build time, libraries are extracted from
 an Apple Music for Android **3.6.0-beta (1109)** arch split (`.apk` or `.apkm`
@@ -30,7 +39,7 @@ errors still return JSON.
 | `POST`   | `/login`          | Body: `{"username": "...", "password": "..."}` or `{"apple_id": "...", "password": "..."}` (synonyms). Drives Apple's `AuthenticateFlow`. Returns `200` + token snapshot, `202` if **2FA** is required (then `POST /login/2fa`), or `401` on failure.                                                                                                                              |
 | `POST`   | `/login/2fa`      | Body: `{"code": "123456"}`. Continues a login waiting for HSA2.                                                                                                                                                                                                                                                                                                                    |
 | `GET`    | `/playback`       | Query string `?adam_id=<numeric store id>`. Returns `200` with a JSON object `{"songList":[...]}` containing the **whole MZ playback dispatch** Apple's `subDownload` URL bag returns (every flavor, key URI, asset URL, metadata field). CFData fields are base64; CFDate fields are ISO 8601. Needs an **authenticated** session; otherwise `401` / `503`. Apple errors → `502`. |
-| `POST`   | `/decrypt` | Binary FairPlay sample decrypt batch. Request frame contains `adam_id`, SKD `uri`, and one or more encrypted samples. Response frame contains plaintext samples. Needs **authenticated** session and `playback_ready`; otherwise `401` / `503`. Apple errors → `502`.                                                                                                              |
+| `POST`   | `/decrypt`        | Binary FairPlay sample decrypt batch. Request frame contains `adam_id`, SKD `uri`, and one or more encrypted samples. Response frame contains plaintext samples. Needs **authenticated** session and `playback_ready`; otherwise `401` / `503`. On FairPlay errors or worker timeouts, the supervisor restarts the worker and retries once before returning the final result.          |
 | `DELETE` | `/login`          | Aborts an in-flight login or clears cached tokens from memory. Apple's on-disk `mpl_db` cache is unchanged.                                                                                                                                                                                                                                                                        |
 
 ### `POST /decrypt` Binary Format
@@ -153,10 +162,16 @@ docker compose up --build
 curl http://127.0.0.1/health
 curl http://127.0.0.1/me
 
-# 6. Sign in (use your real Apple ID; 2FA may require a second request).
+# 6. Sign in (use your real Apple ID).
 curl -X POST http://127.0.0.1/login \
      -H 'content-type: application/json' \
      -d '{"username":"you@example.com","password":"your-app-specific-password"}'
+
+# 7. Enter 2FA if /login returns 202.
+curl -X POST http://127.0.0.1/login/2fa \
+     -H 'content-type: application/json' \
+     -d '{"code":"123456"}'
+
 curl http://127.0.0.1/me
 curl -X DELETE http://127.0.0.1/login
 ```
@@ -192,7 +207,12 @@ On an **x86_64** host, `docker compose` / `docker run` need **QEMU** (binfmt) to
 The daemon reads `WRAPPER_*` environment variables (forwarded via
 `compose.yaml`). See `.env.example` for the full list. The most useful are:
 
-- `WRAPPER_HOST`, `WRAPPER_PORT` - bind address inside the chroot.
+- `WRAPPER_HOST`, `WRAPPER_PORT` - public supervisor bind address inside the
+  chroot.
+- `WRAPPER_MODE` - process role. Default `supervisor`; the supervisor sets
+  `worker` automatically for its private subprocess.
+- `WRAPPER_WORKER_PORT` - private loopback port used by the supervisor to talk
+  to the Apple runtime worker. Default `18080`.
 - `WRAPPER_BASE_DIR` - filesystem dir Apple's libs use for the FairPlay
   key cache and `mpl_db`. The default matches upstream wrapper.
 - `WRAPPER_RESTORE_SESSION` - set to `0` to skip startup token harvest from
