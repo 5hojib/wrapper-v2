@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # extract-libs.sh - Extract Apple native libraries from an APKMirror .apkm bundle
 # or a standalone arch split .apk, and verify each .so against LIBS_VERSION.json.
 #
@@ -12,7 +12,8 @@
 #   --out  <directory>           Where to drop the .so files (default: <repo>/rootfs/system/lib64)
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIBS_VERSION="$REPO_ROOT/LIBS_VERSION.json"
 
 BUNDLE=""
@@ -26,7 +27,7 @@ while [[ $# -gt 0 ]]; do
         --arch)   ARCH="$2";   shift 2 ;;
         --out)    OUT="$2";    shift 2 ;;
         -h|--help)
-            sed -n '2,14p' "$0"
+            sed -n '2,12p' "$0"
             exit 0
             ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -51,9 +52,20 @@ case "$ARCH" in
     *) echo "extract-libs: unsupported arch '$ARCH'" >&2; exit 2 ;;
 esac
 
-for c in jq sha256sum unzip; do
+for c in jq unzip install; do
     command -v "$c" >/dev/null || { echo "extract-libs: $c is required" >&2; exit 3; }
 done
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        echo "extract-libs: sha256sum or shasum is required" >&2
+        return 3
+    fi
+}
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -140,7 +152,10 @@ split_name_score() {
 resolve_apk_from_apkm() {
     local bundle="$1"
     local -a members=()
-    mapfile -t members < <(unzip -Z1 "$bundle" 2>/dev/null | tr -d '\r' | grep -E '\.apk$' || true)
+    local member_name
+    while IFS= read -r member_name; do
+        members+=("$member_name")
+    done < <(unzip -Z1 "$bundle" 2>/dev/null | tr -d '\r' | grep -E '\.apk$' || true)
     if [[ ${#members[@]} -eq 0 ]]; then
         echo "extract-libs: bundle contains no .apk members: $bundle" >&2
         return 1
@@ -195,10 +210,11 @@ resolve_apk_from_apkm() {
     APK_LIB_DIR="$best_lib"
 }
 
-bundle_lower="${BUNDLE,,}"
-if [[ "$bundle_lower" == *.apkm ]]; then
+case "$BUNDLE" in
+*.[aA][pP][kK][mM])
     resolve_apk_from_apkm "$BUNDLE"
-elif [[ "$bundle_lower" == *.apk ]]; then
+    ;;
+*.[aA][pP][kK])
     APK="$BUNDLE"
     APK_LIB_DIR="$(pick_lib_dir_for_arch "$APK" || true)"
     if [[ -z "$APK_LIB_DIR" ]]; then
@@ -209,10 +225,12 @@ elif [[ "$bundle_lower" == *.apk ]]; then
     if [[ "$APK_LIB_DIR" != "lib/$ARCH" ]]; then
         echo "extract-libs: using lib dir $APK_LIB_DIR" >&2
     fi
-else
+    ;;
+*)
     echo "extract-libs: expected .apkm or .apk extension: $BUNDLE" >&2
     exit 2
-fi
+    ;;
+esac
 
 mkdir -p "$OUT"
 LIB_TMP="$TMP/libs"
@@ -221,9 +239,10 @@ unzip -qq "$APK" "$APK_LIB_DIR/*" -d "$LIB_TMP"
 
 # `jq.exe` on msys2/MSVC emits CRLF on Windows; strip CR defensively before
 # iterating, otherwise lib names get a stray \r appended and every lookup fails.
-mapfile -t EXPECTED_LIBS < <(
-    jq -r --arg arch "$ARCH" '.libs[$arch] | keys[]' "$LIBS_VERSION" | tr -d '\r'
-)
+EXPECTED_LIBS=()
+while IFS= read -r so; do
+    EXPECTED_LIBS+=("$so")
+done < <(jq -r --arg arch "$ARCH" '.libs[$arch] | keys[]' "$LIBS_VERSION" | tr -d '\r')
 [[ ${#EXPECTED_LIBS[@]} -gt 0 ]] || {
     echo "extract-libs: no libs pin for arch '$ARCH' in LIBS_VERSION.json" >&2
     exit 4
@@ -239,7 +258,7 @@ for so in "${EXPECTED_LIBS[@]}"; do
         continue
     fi
     expect="$(jq -r --arg arch "$ARCH" --arg so "$so" '.libs[$arch][$so]' "$LIBS_VERSION" | tr -d '\r')"
-    actual="$(sha256sum "$src" | awk '{print $1}')"
+    actual="$(sha256_file "$src")"
     if [[ "$expect" != "$actual" ]]; then
         echo "extract-libs: SHA-256 mismatch on $so" >&2
         echo "  expected: $expect" >&2

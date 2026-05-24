@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # stage-system.sh - Verify and copy committed Android system binaries into
 # rootfs/system/. These binaries (linker64 + bionic + a few AOSP libs) are
 # committed under vendor/android-system/<arch>/ with SHA-256 pins in
@@ -10,7 +10,8 @@
 # Defaults: --arch x86_64, --rootfs <repo>/rootfs
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIBS_VERSION="$REPO_ROOT/LIBS_VERSION.json"
 
 ARCH="x86_64"
@@ -21,7 +22,7 @@ while [[ $# -gt 0 ]]; do
         --arch)   ARCH="$2";   shift 2 ;;
         --rootfs) ROOTFS="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,11p' "$0"
+            sed -n '2,10p' "$0"
             exit 0
             ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -35,15 +36,27 @@ if [[ ! -d "$VENDOR" ]]; then
     exit 4
 fi
 
-for c in jq sha256sum install; do
+for c in jq install; do
     command -v "$c" >/dev/null || { echo "stage-system: $c is required" >&2; exit 3; }
 done
 
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        echo "stage-system: sha256sum or shasum is required" >&2
+        return 3
+    fi
+}
+
 # `jq.exe` on msys2/MSVC emits CRLF on Windows; strip CR defensively before
 # iterating, otherwise paths get a stray \r appended and every lookup fails.
-mapfile -t EXPECTED < <(
-    jq -r --arg arch "$ARCH" '.android_system[$arch] | keys[]' "$LIBS_VERSION" | tr -d '\r'
-)
+EXPECTED=()
+while IFS= read -r rel; do
+    EXPECTED+=("$rel")
+done < <(jq -r --arg arch "$ARCH" '.android_system[$arch] | keys[]' "$LIBS_VERSION" | tr -d '\r')
 [[ ${#EXPECTED[@]} -gt 0 ]] || { echo "stage-system: no .android_system.$ARCH section in LIBS_VERSION.json" >&2; exit 4; }
 
 ok=0
@@ -56,7 +69,7 @@ for rel in "${EXPECTED[@]}"; do
         continue
     fi
     expect="$(jq -r --arg arch "$ARCH" --arg p "$rel" '.android_system[$arch][$p]' "$LIBS_VERSION" | tr -d '\r')"
-    actual="$(sha256sum "$src" | awk '{print $1}')"
+    actual="$(sha256_file "$src")"
     if [[ "$expect" != "$actual" ]]; then
         echo "stage-system: SHA-256 mismatch on $rel" >&2
         echo "  expected: $expect" >&2
