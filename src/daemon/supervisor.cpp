@@ -7,6 +7,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <signal.h>
@@ -23,8 +24,10 @@ using nlohmann::json;
 using namespace std::chrono_literals;
 
 constexpr const char* kWorkerHost = "127.0.0.1";
-constexpr int kMaxConsecutiveWorkerStartFailures = 3;
+constexpr int kMaxRecoveryAttempts = 5;
+constexpr int kMaxConsecutiveWorkerStartFailures = kMaxRecoveryAttempts;
 constexpr int kSupervisorFatalExitCode = 76;
+constexpr auto kMaxRecoveryRetryDelay = 8s;
 
 struct WorkerHttpResponse {
     bool transport_ok = false;
@@ -69,8 +72,9 @@ public:
         });
 
         svr.Post("/login", [this](const httplib::Request& req, httplib::Response& res) {
-            proxy_response(res, request("POST", req.target, req.body,
-                                        req.get_header_value("Content-Type"), 35s));
+            proxy_response(res, request_with_login_recovery(
+                                    req.target, req.body,
+                                    req.get_header_value("Content-Type")));
         });
 
         svr.Post("/login/2fa", [this](const httplib::Request& req, httplib::Response& res) {
@@ -151,23 +155,58 @@ private:
                                                      const std::string& body,
                                                      const std::string& content_type) {
         std::lock_guard<std::mutex> lock(request_mu_);
-        WorkerHttpResponse first =
-            request_with_transport_recovery_locked("POST", path, body, content_type, 50s);
-        if (first.transport_ok && !should_restart_after_decrypt(first)) {
-            return first;
-        }
-        if (!first.transport_ok) return first;
+        WorkerHttpResponse last;
+        for (int attempt = 1; attempt <= kMaxRecoveryAttempts; ++attempt) {
+            last = request_with_transport_recovery_locked("POST", path, body,
+                                                          content_type, 50s);
+            if (last.transport_ok && !should_restart_after_decrypt(last)) {
+                return last;
+            }
+            if (!last.transport_ok || attempt == kMaxRecoveryAttempts) {
+                return last;
+            }
 
-        std::fprintf(stderr,
-                     "supervisor: restarting worker after decrypt response status=%d\n",
-                     first.status);
-        if (!restart()) {
-            WorkerHttpResponse out;
-            out.error = "worker restart failed after decrypt response";
-            return out;
+            std::fprintf(stderr,
+                         "supervisor: restarting worker after decrypt response "
+                         "status=%d (attempt %d/%d)\n",
+                         last.status, attempt, kMaxRecoveryAttempts);
+            if (!restart_after_delay("decrypt response", attempt)) {
+                WorkerHttpResponse out;
+                out.error = "worker restart failed after decrypt response";
+                return out;
+            }
         }
 
-        return request_with_transport_recovery_locked("POST", path, body, content_type, 50s);
+        return last;
+    }
+
+    WorkerHttpResponse request_with_login_recovery(const std::string& path,
+                                                   const std::string& body,
+                                                   const std::string& content_type) {
+        std::lock_guard<std::mutex> lock(request_mu_);
+        WorkerHttpResponse last;
+        for (int attempt = 1; attempt <= kMaxRecoveryAttempts; ++attempt) {
+            last = request_with_transport_recovery_locked("POST", path, body,
+                                                          content_type, 35s);
+            if (last.transport_ok && !should_restart_after_login(last)) {
+                return last;
+            }
+            if (!last.transport_ok || attempt == kMaxRecoveryAttempts) {
+                return last;
+            }
+
+            std::fprintf(stderr,
+                         "supervisor: restarting worker after login response "
+                         "status=%d (attempt %d/%d)\n",
+                         last.status, attempt, kMaxRecoveryAttempts);
+            if (!restart_after_delay("login response", attempt)) {
+                WorkerHttpResponse out;
+                out.error = "worker restart failed after login response";
+                return out;
+            }
+        }
+
+        return last;
     }
 
     WorkerHttpResponse request_with_transport_recovery_locked(
@@ -177,21 +216,42 @@ private:
         const std::string& content_type,
         std::chrono::seconds read_timeout) {
         WorkerHttpResponse out;
-        if (!ensure_started()) {
-            out.error = "worker did not become ready";
-            return out;
-        }
-        out = request_once(method, path, body, content_type, read_timeout);
-        if (out.transport_ok) return out;
+        for (int attempt = 1; attempt <= kMaxRecoveryAttempts; ++attempt) {
+            if (!ensure_started()) {
+                out.error = "worker did not become ready";
+            } else {
+                out = request_once(method, path, body, content_type, read_timeout);
+                if (out.transport_ok) return out;
+            }
 
-        std::fprintf(stderr, "supervisor: worker transport failed (%s), restarting\n",
-                     out.error.c_str());
-        if (!restart()) {
-            WorkerHttpResponse restart_error;
-            restart_error.error = "worker restart failed after transport error: " + out.error;
-            return restart_error;
+            if (attempt == kMaxRecoveryAttempts) {
+                return out;
+            }
+
+            std::fprintf(stderr,
+                         "supervisor: worker transport failed (%s), restarting "
+                         "(attempt %d/%d)\n",
+                         out.error.c_str(), attempt, kMaxRecoveryAttempts);
+            const std::string previous_error = out.error;
+            if (!restart_after_delay("transport error", attempt)) {
+                WorkerHttpResponse restart_error;
+                restart_error.error = "worker restart failed after transport error: "
+                                    + previous_error;
+                return restart_error;
+            }
         }
-        return request_once(method, path, body, content_type, read_timeout);
+        return out;
+    }
+
+    bool restart_after_delay(const char* reason, int failed_attempt) {
+        auto delay = std::chrono::seconds(1 << (failed_attempt - 1));
+        if (delay > kMaxRecoveryRetryDelay) {
+            delay = kMaxRecoveryRetryDelay;
+        }
+        std::fprintf(stderr, "supervisor: waiting %lds before retry after %s\n",
+                     static_cast<long>(delay.count()), reason);
+        std::this_thread::sleep_for(delay);
+        return restart();
     }
 
     bool start_locked() {
@@ -342,6 +402,12 @@ private:
         if (r.body.find("CKC") != std::string::npos) return true;
         if (r.body.find("KDCanProcess") != std::string::npos) return true;
         return false;
+    }
+
+    static bool should_restart_after_login(const WorkerHttpResponse& r) {
+        if (!r.transport_ok) return true;
+        if (r.status != 401) return false;
+        return r.body.find("Apple returned response type 4") != std::string::npos;
     }
 
     static void proxy_response(httplib::Response& res, const WorkerHttpResponse& wr) {
