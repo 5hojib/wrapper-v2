@@ -58,7 +58,7 @@
 namespace {
 
 constexpr const char* kDefaultHost    = "0.0.0.0";
-constexpr int         kDefaultPort    = 80;
+constexpr int         kDefaultPort    = 8080;
 constexpr int         kDefaultWorkerPort = 18080;
 constexpr const char* kVersion        = "0.0.1";
 
@@ -147,7 +147,7 @@ bool consume_argv(int argc, char** argv, ProgramMode* mode) {
                 "\n"
                 "Environment:\n"
                 "  WRAPPER_HOST             bind address\n"
-                "  WRAPPER_PORT             bind port\n"
+                "  PORT, WRAPPER_PORT       bind port\n"
                 "  WRAPPER_MODE             supervisor or worker\n"
                 "  WRAPPER_WORKER_PORT      private worker bind port\n"
                 "  WRAPPER_BASE_DIR         Apple-lib working dir\n"
@@ -234,7 +234,12 @@ int main(int argc, char** argv) {
     }
 
     std::string listen_host = env_or("WRAPPER_HOST", kDefaultHost);
-    int listen_port = env_int("WRAPPER_PORT", kDefaultPort);
+    int listen_port;
+    if (mode == ProgramMode::Supervisor) {
+        listen_port = env_int("PORT", env_int("WRAPPER_PORT", kDefaultPort));
+    } else {
+        listen_port = env_int("WRAPPER_PORT", kDefaultPort);
+    }
     const int worker_port = env_int("WRAPPER_WORKER_PORT", kDefaultWorkerPort);
 
     std::signal(SIGINT,  on_signal);

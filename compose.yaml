@@ -7,22 +7,18 @@ services:
         TARGET_ARCH: ${TARGET_ARCH:-x86_64}
         BUILD_PLATFORM: ${BUILD_PLATFORM:-linux/amd64}
         RUNTIME_PLATFORM: ${RUNTIME_PLATFORM:-linux/amd64}
+        APK_URL: ${APK_URL:-}
     image: wrapper-v2:latest
     container_name: wrapper-v2
     restart: unless-stopped
-    cap_add:
-      - SYS_ADMIN
-      - SYS_CHROOT
-      - SYS_PTRACE
-    security_opt:
-      - apparmor:unconfined
+    # Privileged operations are no longer required.
     ports:
-      - "${HTTP_PORT:-80}:80"
+      - "${HTTP_PORT:-8080}:8080"
     environment:
       WRAPPER_USERNAME: ${WRAPPER_USERNAME:-}
       WRAPPER_PASSWORD: ${WRAPPER_PASSWORD:-}
       WRAPPER_APPLE_INIT: ${WRAPPER_APPLE_INIT:-}
       WRAPPER_RUNTIME_TRACE: ${WRAPPER_RUNTIME_TRACE:-}
     volumes:
-      # Persist Apple state at the same path shape as the Android app sandbox.
-      - ./data:/app/rootfs/data/data/com.apple.android.music/files
+      # Persist Apple state.
+      - ./data:/data/data/com.apple.android.music/files

@@ -1,20 +1,8 @@
 # wrapper-v2 image.
 #
-# This Dockerfile assumes that rootfs/system/lib64/ has already been populated
-# by the host (or in CI) for the same TARGET_ARCH. The image does not download
-# or extract Apple Music artifacts.
-#
-# The build stage is always linux/amd64: Google only publishes the Linux NDK as
-# an x86_64-host zip (android-ndk-r*b-linux.zip). On TARGET_ARCH=arm64-v8a we
-# cross-compile the host `wrapper` with gcc-aarch64-linux-gnu; the daemon is
-# still built with the NDK for ANDROID_ABI=arm64-v8a.
-#
-# Final image platform (e.g. linux/arm64 vs linux/amd64) comes from
-# RUNTIME_PLATFORM and must match TARGET_ARCH / the staged rootfs.
-#
-# Example:
-#   docker build --build-arg TARGET_ARCH=arm64-v8a \
-#     --build-arg RUNTIME_PLATFORM=linux/arm64 -t wrapper-v2:arm64 .
+# This Dockerfile is optimized for deployment on Render and other non-root
+# environments. It can automatically download Apple Music libraries if APK_URL
+# is provided.
 
 ARG RUNTIME_PLATFORM=linux/amd64
 # Kept for docker-compose compatibility; the compile stage ignores this.
@@ -28,6 +16,8 @@ FROM --platform=linux/amd64 debian:13.2 AS build
 ARG TARGET_ARCH=x86_64
 ARG CMAKE_BUILD_TYPE=Release
 ARG NDK_VERSION=23
+ARG APK_URL
+
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -58,15 +48,25 @@ ENV ANDROID_NDK_HOME=/opt/android-ndk-r${NDK_VERSION}b
 WORKDIR /app
 COPY . /app
 
+# Stage system libraries first.
+RUN bash tools/stage-system.sh --arch "$TARGET_ARCH"
+
+# Extract Apple Music libraries if URL is provided, otherwise expect them to be staged.
+RUN if [ -n "$APK_URL" ]; then \
+        echo "Downloading Apple Music from $APK_URL..." && \
+        curl -fSL -o apple_music.apkm "$APK_URL" && \
+        bash tools/extract-libs.sh --bundle apple_music.apkm --arch "$TARGET_ARCH" && \
+        rm apple_music.apkm; \
+    fi
+
 RUN test -f rootfs/system/bin/linker64 || { \
         echo "ERROR: rootfs/system/bin/linker64 is missing." >&2; \
-        echo "Run tools/stage-system.sh on the host before docker build." >&2; \
         exit 1; \
     } && \
     test -d rootfs/system/lib64 && \
     ls rootfs/system/lib64/*.so >/dev/null 2>&1 || { \
         echo "ERROR: rootfs/system/lib64/ has no .so files." >&2; \
-        echo "Stage the required Apple Music native libraries before docker build." >&2; \
+        echo "Stage the required Apple Music native libraries or provide APK_URL." >&2; \
         exit 1; \
     }
 
@@ -88,16 +88,32 @@ RUN host_cc=(); \
 # -----------------------------------------------------------------------------
 FROM --platform=${RUNTIME_PLATFORM} debian:13.2
 
-WORKDIR /app
+# Install ca-certificates for SSL verification.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /app/wrapper        /app/wrapper
-COPY --from=build /app/rootfs         /app/rootfs
+# Create a non-root user.
+RUN useradd -m -u 1000 wrapper && \
+    mkdir -p /data/data/com.apple.android.music/files && \
+    chown -R wrapper:wrapper /data
 
-# Apple's libcurl inside the chroot needs CA certificates for SSL verification.
-# The build stage has ca-certificates installed; copy the bundle into the rootfs
-# where the launcher will point SSL_CERT_FILE / CURL_CA_BUNDLE at it.
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /app/rootfs/etc/ssl/certs/ca-certificates.crt
+# Copy the built daemon and the staged rootfs to the real root.
+# This allows the Android linker to find everything without chroot.
+COPY --from=build /app/rootfs/system /system
+COPY --from=build /app/rootfs/system/bin/main /usr/local/bin/wrapper-daemon
 
-EXPOSE 80
+# Point Bionic at the right places.
+ENV ANDROID_DATA=/data
+ENV ANDROID_ROOT=/system
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV ANDROID_DNS_MODE=local
 
-ENTRYPOINT ["/app/wrapper"]
+# Default port for Render.
+ENV PORT=8080
+EXPOSE 8080
+
+USER wrapper
+WORKDIR /home/wrapper
+
+# Start the daemon via the Android linker.
+ENTRYPOINT ["/system/bin/linker64", "/usr/local/bin/wrapper-daemon"]

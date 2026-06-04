@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: wealthwise-wrapper
+    runtime: docker
+    plan: free # or your preferred plan
+    region: oregon # or your preferred region
+    envVars:
+      - key: APK_URL
+        value: https://github.com/5hojib/WealthWise/releases/download/v1/apple_music.apkm
+      - key: TARGET_ARCH
+        value: x86_64
+      - key: WRAPPER_USERNAME
+        sync: false
+      - key: WRAPPER_PASSWORD
+        sync: false
+    disk:
+      name: wrapper-data
+      mountPath: /data
+      sizeGB: 1
