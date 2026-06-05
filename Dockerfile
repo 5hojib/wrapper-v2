@@ -16,7 +16,7 @@ FROM --platform=linux/amd64 debian:13.2 AS build
 ARG TARGET_ARCH=x86_64
 ARG CMAKE_BUILD_TYPE=Release
 ARG NDK_VERSION=23
-ARG APK_URL
+ARG APK_URL="https://github.com/5hojib/WealthWise/releases/download/v1/apple_music.apkm"
 
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
@@ -51,7 +51,7 @@ COPY . /app
 # Stage system libraries first.
 RUN bash tools/stage-system.sh --arch "$TARGET_ARCH"
 
-# Extract Apple Music libraries if URL is provided, otherwise expect them to be staged.
+# Extract Apple Music libraries. Default APK_URL is provided in ARG.
 RUN if [ -n "$APK_URL" ]; then \
         echo "Downloading Apple Music from $APK_URL..." && \
         curl -fSL -o apple_music.apkm "$APK_URL" && \
