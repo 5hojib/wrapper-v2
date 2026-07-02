@@ -1,6 +1,7 @@
 #include "supervisor.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -115,8 +116,12 @@ public:
     }
 
     void stop_worker() {
-        std::lock_guard<std::mutex> lock(mu_);
-        stop_locked();
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            stopping_ = true;
+            stop_locked();
+        }
+        stop_cv_.notify_all();
     }
 
 private:
@@ -251,7 +256,12 @@ private:
         }
         std::fprintf(stderr, "supervisor: waiting %lds before retry after %s\n",
                      static_cast<long>(delay.count()), reason);
-        std::this_thread::sleep_for(delay);
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            if (stop_cv_.wait_for(lock, delay, [this] { return stopping_; })) {
+                return false;
+            }
+        }
         return restart();
     }
 
@@ -444,6 +454,8 @@ private:
     int consecutive_worker_start_failures_ = 0;
     std::mutex mu_;
     std::mutex request_mu_;
+    std::condition_variable stop_cv_;
+    bool stopping_ = false;
 };
 
 Supervisor::Supervisor(std::string argv0, std::string version, int worker_port)
