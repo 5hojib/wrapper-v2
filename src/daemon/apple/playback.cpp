@@ -194,6 +194,86 @@ std::string make_buy_parameters(const std::string& adam_id) {
     return out;
 }
 
+std::string validate_playback_inputs(const Loader& loader,
+                                     Runtime&      runtime,
+                                     const std::string& adam_id) {
+    if (!loader.ok()) {
+        return "Apple libs not loaded";
+    }
+    if (!runtime.initialized()) {
+        return "Apple runtime not initialized";
+    }
+    if (adam_id.empty()) {
+        return "adam_id is required";
+    }
+    for (char c : adam_id) {
+        if (c < '0' || c > '9') {
+            return "adam_id must be a numeric string";
+        }
+    }
+    return "";
+}
+
+std::string extract_apple_error(const Symbols& s, void* purchase_response_obj) {
+    if (purchase_response_obj == nullptr || s.PurchaseResponse_error == nullptr) {
+        return "";
+    }
+
+    abi::shared_ptr* err_sp = s.PurchaseResponse_error(purchase_response_obj);
+    if (err_sp == nullptr || err_sp->obj == nullptr) {
+        return "";
+    }
+
+    int code = (s.SEC_errorCode != nullptr) ? s.SEC_errorCode(err_sp->obj) : 0;
+    const char* what = (s.SEC_what != nullptr) ? s.SEC_what(err_sp->obj) : nullptr;
+
+    std::string apple_err = "Apple store error code=" + std::to_string(code);
+    if (what != nullptr && *what != '\0') {
+        apple_err += ": ";
+        apple_err += what;
+    }
+    return apple_err;
+}
+
+bool extract_items_json(const Symbols& s, void* purchase_response_obj, nlohmann::json& out_body) {
+    if (purchase_response_obj == nullptr || s.PurchaseResponse_items == nullptr) {
+        return false;
+    }
+
+    abi::std_vector items{};
+    aarch64_sret::purchase_response_items(&items, purchase_response_obj,
+                                          s.PurchaseResponse_items);
+
+    const auto* begin = static_cast<abi::shared_ptr*>(items.begin);
+    const auto* end   = static_cast<abi::shared_ptr*>(items.end);
+    const std::size_t count = (end > begin)
+        ? static_cast<std::size_t>(end - begin) : 0;
+
+    nlohmann::json song_list = nlohmann::json::array();
+    for (std::size_t i = 0; i < count; ++i) {
+        void* item_obj = begin[i].obj;
+        if (item_obj == nullptr) {
+            continue;
+        }
+        void* item_dict = purchase_item_cfdictionary(s, item_obj);
+        if (item_dict == nullptr) continue;
+        song_list.push_back(cf_to_json(s, item_dict));
+    }
+
+    // Note: we deliberately leak `items` (a std::vector with N shared_ptr
+    // elements). Calling its destructor would require the vector's dtor
+    // symbol; same shortcut upstream wrapper takes with similar return-
+    // by-value results. ~16 bytes per item.
+
+    if (!song_list.empty()) {
+        out_body = nlohmann::json::object();
+        out_body["songList"] = std::move(song_list);
+        return true;
+    }
+
+    return false;
+}
+
 }  // namespace
 
 PlaybackResult fetch_playback_json(const Loader& loader,
@@ -201,23 +281,10 @@ PlaybackResult fetch_playback_json(const Loader& loader,
                                    std::string   adam_id) {
     PlaybackResult out;
 
-    if (!loader.ok()) {
-        out.error = "Apple libs not loaded";
+    std::string validation_error = validate_playback_inputs(loader, runtime, adam_id);
+    if (!validation_error.empty()) {
+        out.error = std::move(validation_error);
         return out;
-    }
-    if (!runtime.initialized()) {
-        out.error = "Apple runtime not initialized";
-        return out;
-    }
-    if (adam_id.empty()) {
-        out.error = "adam_id is required";
-        return out;
-    }
-    for (char c : adam_id) {
-        if (c < '0' || c > '9') {
-            out.error = "adam_id must be a numeric string";
-            return out;
-        }
     }
 
     const Symbols& s = loader.sym();
@@ -304,21 +371,7 @@ PlaybackResult fetch_playback_json(const Loader& loader,
         abi::shared_ptr* resp_sp = s.PurchaseRequest_response(pr_buf);
         if (resp_sp != nullptr && resp_sp->obj != nullptr) {
             purchase_response_obj = resp_sp->obj;
-            if (s.PurchaseResponse_error != nullptr) {
-                abi::shared_ptr* err_sp =
-                    s.PurchaseResponse_error(purchase_response_obj);
-                if (err_sp != nullptr && err_sp->obj != nullptr) {
-                    int code = (s.SEC_errorCode != nullptr)
-                                 ? s.SEC_errorCode(err_sp->obj) : 0;
-                    const char* what = (s.SEC_what != nullptr)
-                                         ? s.SEC_what(err_sp->obj) : nullptr;
-                    apple_err = "Apple store error code=" + std::to_string(code);
-                    if (what != nullptr && *what != '\0') {
-                        apple_err += ": ";
-                        apple_err += what;
-                    }
-                }
-            }
+            apple_err = extract_apple_error(s, purchase_response_obj);
         }
     }
 
@@ -334,39 +387,9 @@ PlaybackResult fetch_playback_json(const Loader& loader,
     // directly (one cf_to_json per item, then wrap in {"songList": [...]}).
     // This is the expected path - PurchaseRequest::run does not fire
     // URLRequest::_performActionsForResponse.
-    if (purchase_response_obj != nullptr
-        && s.PurchaseResponse_items != nullptr) {
-        abi::std_vector items{};
-        aarch64_sret::purchase_response_items(&items, purchase_response_obj,
-                                              s.PurchaseResponse_items);
-
-        const auto* begin = static_cast<abi::shared_ptr*>(items.begin);
-        const auto* end   = static_cast<abi::shared_ptr*>(items.end);
-        const std::size_t count = (end > begin)
-            ? static_cast<std::size_t>(end - begin) : 0;
-
-        nlohmann::json song_list = nlohmann::json::array();
-        for (std::size_t i = 0; i < count; ++i) {
-            void* item_obj = begin[i].obj;
-            if (item_obj == nullptr) {
-                continue;
-            }
-            void* item_dict = purchase_item_cfdictionary(s, item_obj);
-            if (item_dict == nullptr) continue;
-            song_list.push_back(cf_to_json(s, item_dict));
-        }
-
-        // Note: we deliberately leak `items` (a std::vector with N shared_ptr
-        // elements). Calling its destructor would require the vector's dtor
-        // symbol; same shortcut upstream wrapper takes with similar return-
-        // by-value results. ~16 bytes per item.
-
-        if (!song_list.empty()) {
-            out.body = nlohmann::json::object();
-            out.body["songList"] = std::move(song_list);
-            out.ok = true;
-            return out;
-        }
+    if (extract_items_json(s, purchase_response_obj, out.body)) {
+        out.ok = true;
+        return out;
     }
 
     if (!apple_err.empty()) {
