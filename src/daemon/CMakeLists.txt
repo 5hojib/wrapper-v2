@@ -33,6 +33,29 @@ FetchContent_Declare(
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 
+# MongoDB C Driver
+FetchContent_Declare(
+    mongo_c_driver
+    GIT_REPOSITORY https://github.com/mongodb/mongo-c-driver.git
+    GIT_TAG        1.25.0
+    GIT_SHALLOW    TRUE
+)
+set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ENABLE_ZLIB BUNDLED CACHE STRING "" FORCE)
+set(ENABLE_SSL AUTO CACHE STRING "" FORCE)
+set(ENABLE_SRV ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(mongo_c_driver)
+
+# MongoDB CXX Driver
+FetchContent_Declare(
+    mongo_cxx_driver
+    GIT_REPOSITORY https://github.com/mongodb/mongo-cxx-driver.git
+    GIT_TAG        r3.9.0
+    GIT_SHALLOW    TRUE
+)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(mongo_cxx_driver)
 
 # -----------------------------------------------------------------------------
 # Daemon executable
@@ -47,6 +70,7 @@ add_executable(main
     apple/playback.cpp
     apple/runtime.cpp
     apple/tokens.cpp
+    mongo_client.cpp
 )
 
 target_include_directories(main PRIVATE
@@ -56,6 +80,7 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     httplib::httplib
     nlohmann_json::nlohmann_json
+    mongo::mongocxx_static
 )
 
 target_compile_options(main PRIVATE

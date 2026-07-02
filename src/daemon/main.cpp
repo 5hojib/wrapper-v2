@@ -54,6 +54,7 @@
 #include "apple/runtime.hpp"
 #include "server.hpp"
 #include "supervisor.hpp"
+#include "mongo_client.hpp"
 
 namespace {
 
@@ -298,12 +299,27 @@ int main(int argc, char** argv) {
             rcfg.device_info = env_or("WRAPPER_DEVICE_INFO", rcfg.device_info);
             if (runtime.initialize(loader, rcfg)) {
                 if (env_bool("WRAPPER_RESTORE_SESSION", true)) {
-                    const bool restored =
-                        account.try_restore_cached_session(loader, runtime);
-                    if (restored) {
-                        std::fprintf(stderr,
-                                     "wrapper-v2: session restored from Apple cache "
-                                     "(GET /me without POST /login)\n");
+                    bool restored = false;
+                    wrapper::apple::Tokens mongo_tokens;
+
+                    wrapper::mongo_client::initialize();
+                    if (wrapper::mongo_client::is_enabled()) {
+                        if (wrapper::mongo_client::restore_tokens(&mongo_tokens)) {
+                            account.force_authenticated(std::move(mongo_tokens));
+                            restored = true;
+                            std::fprintf(stderr,
+                                         "wrapper-v2: session restored from MongoDB "
+                                         "(GET /me without POST /login)\n");
+                        }
+                    }
+
+                    if (!restored) {
+                        restored = account.try_restore_cached_session(loader, runtime);
+                        if (restored) {
+                            std::fprintf(stderr,
+                                         "wrapper-v2: session restored from Apple cache "
+                                         "(GET /me without POST /login)\n");
+                        }
                     }
                 } else {
                     std::fprintf(stderr,

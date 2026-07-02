@@ -118,6 +118,10 @@ public:
     // to know when to send the HTTP response.
     LoginState wait_for_settled_state(std::chrono::milliseconds timeout);
 
+    // Force the account into the Authenticated state with the provided tokens.
+    // Used when tokens are restored from an external source like MongoDB.
+    void force_authenticated(Tokens t);
+
     // Public-safe snapshot for /me.
     AccountSnapshot public_snapshot() const;
 

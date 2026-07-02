@@ -12,6 +12,7 @@
 #include "apple/loader.hpp"
 #include "apple/runtime.hpp"
 #include "apple/tokens.hpp"
+#include "mongo_client.hpp"
 
 namespace wrapper::apple {
 
@@ -213,6 +214,17 @@ LoginState Account::wait_for_settled_state(std::chrono::milliseconds timeout) {
     return state_.load(std::memory_order_acquire);
 }
 
+void Account::force_authenticated(Tokens t) {
+    std::lock_guard<std::mutex> g(mu_);
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+    tokens_ = std::move(t);
+    apple_id_ = tokens_.apple_id;
+    state_.store(LoginState::Authenticated, std::memory_order_release);
+    cv_state_.notify_all();
+}
+
 LoginState Account::state() const {
     return state_.load(std::memory_order_acquire);
 }
@@ -279,6 +291,10 @@ void Account::finish_authenticated(Tokens t) {
     tokens_ = std::move(t);
     tokens_.logged_in_at = std::chrono::system_clock::now();
     apple_id_ = tokens_.apple_id;
+
+    // Save tokens to MongoDB if configured
+    wrapper::mongo_client::save_tokens(tokens_);
+
     // Wipe the password from memory now that the flow is done.
     password_.assign(password_.size(), '\0');
     password_.clear();
